@@ -1,49 +1,6 @@
-"""
-	"XFeat: Accelerated Features for Lightweight Image Matching, CVPR 2024."
-	https://www.verlab.dcc.ufmg.br/descriptors/xfeat_cvpr24/
-"""
-
-import argparse
 import os
 import time
 import sys
-
-def parse_arguments():
-    parser = argparse.ArgumentParser(description="XFeat training script.")
-
-    parser.add_argument('--megadepth_root_path', type=str, default='/ssd/guipotje/Data/MegaDepth',
-                        help='Path to the MegaDepth dataset root directory.')
-    parser.add_argument('--synthetic_root_path', type=str, default='/homeLocal/guipotje/sshfs/datasets/coco_20k',
-                        help='Path to the synthetic dataset root directory.')
-    parser.add_argument('--ckpt_save_path', type=str, required=True,
-                        help='Path to save the checkpoints.')
-    parser.add_argument('--training_type', type=str, default='xfeat_default',
-                        choices=['xfeat_default', 'xfeat_synthetic', 'xfeat_megadepth'],
-                        help='Training scheme. xfeat_default uses both megadepth & synthetic warps.')
-    parser.add_argument('--batch_size', type=int, default=10,
-                        help='Batch size for training. Default is 10.')
-    parser.add_argument('--n_steps', type=int, default=160_000,
-                        help='Number of training steps. Default is 160000.')
-    parser.add_argument('--lr', type=float, default=3e-4,
-                        help='Learning rate. Default is 0.0003.')
-    parser.add_argument('--gamma_steplr', type=float, default=0.5,
-                        help='Gamma value for StepLR scheduler. Default is 0.5.')
-    parser.add_argument('--training_res', type=lambda s: tuple(map(int, s.split(','))),
-                        default=(800, 608), help='Training resolution as width,height. Default is (800, 608).')
-    parser.add_argument('--device_num', type=str, default='0',
-                        help='Device number to use for training. Default is "0".')
-    parser.add_argument('--dry_run', action='store_true',
-                        help='If set, perform a dry run training with a mini-batch for sanity check.')
-    parser.add_argument('--save_ckpt_every', type=int, default=500,
-                        help='Save checkpoints every N steps. Default is 500.')
-
-    args = parser.parse_args()
-
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.device_num
-
-    return args
-
-args = parse_arguments()
 
 import torch
 from torch import nn
@@ -62,19 +19,25 @@ from modules.dataset.megadepth.megadepth import MegaDepthDataset
 from modules.dataset.megadepth import megadepth_warper
 from torch.utils.data import Dataset, DataLoader
 
+class CityscapesDataset(Dataset):
+    def __init__(self,
+                 root_dir,**kwargs):
+        pass
+    
+    def __len__(self):
+        pass
+    
+    def __getitem__(self, idx):
+        pass
+
+
 
 class Trainer():
-    """
-        Class for training XFeat with default params as described in the paper.
-        We use a blend of MegaDepth (labeled) pairs with synthetically warped images (self-supervised).
-        The major bottleneck is to keep loading huge megadepth h5 files from disk, 
-        the network training itself is quite fast.
-    """
 
     def __init__(self, megadepth_root_path, 
-                       synthetic_root_path, 
+                        cityscapes_root_path,
                        ckpt_save_path, 
-                       model_name = 'xfeat_default',
+                       model_name = 'xfeat_megadepth',
                        batch_size = 10, n_steps = 160_000, lr= 3e-4, gamma_steplr=0.5, 
                        training_res = (800, 608), device_num="0", dry_run = False,
                        save_ckpt_every = 500):
@@ -87,26 +50,6 @@ class Trainer():
         self.steps = n_steps
         self.opt = optim.Adam(filter(lambda x: x.requires_grad, self.net.parameters()) , lr = lr)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.opt, step_size=30_000, gamma=gamma_steplr)
-
-        ##################### Synthetic COCO INIT ##########################
-        if model_name in ('xfeat_default', 'xfeat_synthetic'):
-            self.augmentor = AugmentationPipe(
-                                        img_dir = synthetic_root_path,
-                                        device = self.dev, load_dataset = True,
-                                        batch_size = int(self.batch_size * 0.4 if model_name=='xfeat_default' else batch_size),
-                                        out_resolution = training_res, 
-                                        warp_resolution = training_res,
-                                        sides_crop = 0.1,
-                                        max_num_imgs = 3_000,
-                                        num_test_imgs = 5,
-                                        photometric = True,
-                                        geometric = True,
-                                        reload_step = 4_000
-                                        )
-        else:
-            self.augmentor = None
-        ##################### Synthetic COCO END #######################
-
 
         ##################### MEGADEPTH INIT ##########################
         if model_name in ('xfeat_default', 'xfeat_megadepth'):
@@ -127,6 +70,26 @@ class Trainer():
         else:
             self.data_iter = None
         ##################### MEGADEPTH INIT END #######################
+        
+        ##################### CITYSCAPES INIT ##########################
+        if model_name in ('xfeat_cityscapes'):
+            
+            TRAIN_BASE_PATH = f"{cityscapes_root_path}/train"
+
+            TRAIN_NPZ_ROOT = f"{TRAIN_BASE_PATH}/scene_info_0.1_0.7"
+
+            # npz_paths = glob.glob(TRAIN_NPZ_ROOT + '/*.npz')[:]
+            data = torch.utils.data.ConcatDataset( [CityscapesDataset(root_dir = TRAINVAL_DATA_SOURCE,
+                            npz_path = path) for path in tqdm.tqdm(npz_paths, desc="[Cityscapes] Loading metadata")] )
+
+            self.data_loader = DataLoader(data, 
+                                          batch_size=int(self.batch_size * 0.6 if model_name=='xfeat_default' else batch_size),
+                                          shuffle=True)
+            self.data_iter = iter(self.data_loader)
+        
+        else:
+            self.data_iter = None
+        ##################### CITYSCAPES INIT END #######################
 
         os.makedirs(ckpt_save_path, exist_ok=True)
         os.makedirs(ckpt_save_path + '/logdir', exist_ok=True)
@@ -140,71 +103,46 @@ class Trainer():
 
     def train(self):
 
-        self.net.train()
+        self.net.train()  # 将模型设置为训练模式
 
-        difficulty = 0.10
+        difficulty = 0.10  # 设置训练难度
 
-        p1s, p2s, H1, H2 = None, None, None, None
-        d = None
-
-        if self.augmentor is not None:
-            p1s, p2s, H1, H2 = make_batch(self.augmentor, difficulty)
+        p1s, p2s, H1, H2 = None, None, None, None  # 初始化变量
+        d = None  # 初始化数据变量
         
         if self.data_iter is not None:
-            d = next(self.data_iter)
+            d = next(self.data_iter)  # 获取下一个数据批次
 
-        with tqdm.tqdm(total=self.steps) as pbar:
-            for i in range(self.steps):
-                if not self.dry_run:
+        with tqdm.tqdm(total=self.steps) as pbar:  # 使用 tqdm 显示进度条
+            for i in range(self.steps):  # 训练循环
+                if not self.dry_run:  # 如果不是 dry run
                     if self.data_iter is not None:
                         try:
-                            # Get the next MD batch
+                            # 获取下一个 MegaDepth 数据批次
                             d = next(self.data_iter)
-
                         except StopIteration:
                             print("End of DATASET!")
-                            # If StopIteration is raised, create a new iterator.
+                            # 如果数据迭代器结束，重新创建一个新的迭代器
                             self.data_iter = iter(self.data_loader)
                             d = next(self.data_iter)
-
-                    if self.augmentor is not None:
-                        #Grab synthetic data
-                        p1s, p2s, H1, H2 = make_batch(self.augmentor, difficulty)
 
                 if d is not None:
                     for k in d.keys():
                         if isinstance(d[k], torch.Tensor):
-                            d[k] = d[k].to(self.dev)
+                            d[k] = d[k].to(self.dev)  # 将数据移动到设备上（GPU 或 CPU）
                 
-                    p1, p2 = d['image0'], d['image1']
-                    positives_md_coarse = megadepth_warper.spvs_coarse(d, 8)
+                    p1, p2 = d['image0'], d['image1']  # 获取图像对
+                    positives_md_coarse = megadepth_warper.spvs_coarse(d, 8)  # 获取粗匹配点
 
-                if self.augmentor is not None:
-                    h_coarse, w_coarse = p1s[0].shape[-2] // 8, p1s[0].shape[-1] // 8
-                    _ , positives_s_coarse = get_corresponding_pts(p1s, p2s, H1, H2, self.augmentor, h_coarse, w_coarse)
-
-                #Join megadepth & synthetic data
+                # 将 MegaDepth 数据转换为灰度图像
                 with torch.inference_mode():
-                    #RGB -> GRAY
                     if d is not None:
                         p1 = p1.mean(1, keepdim=True)
                         p2 = p2.mean(1, keepdim=True)
-                    if self.augmentor is not None:
-                        p1s = p1s.mean(1, keepdim=True)
-                        p2s = p2s.mean(1, keepdim=True)
 
-                    #Cat two batches
-                    if self.model_name in ('xfeat_default'):
-                        p1 = torch.cat([p1s, p1], dim=0)
-                        p2 = torch.cat([p2s, p2], dim=0)
-                        positives_c = positives_s_coarse + positives_md_coarse
-                    elif self.model_name in ('xfeat_synthetic'):
-                        p1 = p1s ; p2 = p2s
-                        positives_c = positives_s_coarse
-                    else:
-                        positives_c = positives_md_coarse
+                    positives_c = positives_md_coarse
 
-                #Check if batch is corrupted with too few correspondences
+                # 检查批次是否损坏（匹配点太少）
                 is_corrupted = False
                 for p in positives_c:
                     if len(p) < 30:
@@ -213,26 +151,26 @@ class Trainer():
                 if is_corrupted:
                     continue
 
-                #Forward pass
+                # 前向传播
                 feats1, kpts1, hmap1 = self.net(p1)
                 feats2, kpts2, hmap2 = self.net(p2)
 
                 loss_items = []
 
                 for b in range(len(positives_c)):
-                    #Get positive correspondencies
+                    # 获取正匹配点
                     pts1, pts2 = positives_c[b][:, :2], positives_c[b][:, 2:]
 
-                    #Grab features at corresponding idxs
+                    # 获取对应索引的特征
                     m1 = feats1[b, :, pts1[:,1].long(), pts1[:,0].long()].permute(1,0)
                     m2 = feats2[b, :, pts2[:,1].long(), pts2[:,0].long()].permute(1,0)
 
-                    #grab heatmaps at corresponding idxs
+                    # 获取对应索引的热图
                     h1 = hmap1[b, 0, pts1[:,1].long(), pts1[:,0].long()]
-                    h2 = hmap2[b, 0, pts2[:,1].long(), pts2[:,0].long()]
+                    h2 = hmap2[b, 0, pts2[:,1].long()]
                     coords1 = self.net.fine_matcher(torch.cat([m1, m2], dim=-1))
 
-                    #Compute losses
+                    # 计算损失
                     loss_ds, conf = dual_softmax_loss(m1, m2)
                     loss_coords, acc_coords = coordinate_classification_loss(coords1, pts1, pts2, conf)
 
@@ -261,7 +199,7 @@ class Trainer():
                 loss_kp_pos = loss_kp_pos.item()
                 loss_l1 = loss_kp.item()
 
-                # Compute Backward Pass
+                # 反向传播
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1.)
                 self.opt.step()
@@ -276,7 +214,7 @@ class Trainer():
                                                                         loss.item(), acc_coarse_0, acc_coarse, acc_coords, loss_coarse, loss_coord, loss_l1, nb_coarse, loss_kp_pos, acc_pos) )
                 pbar.update(1)
 
-                # Log metrics
+                # 记录指标
                 self.writer.add_scalar('Loss/total', loss.item(), i)
                 self.writer.add_scalar('Accuracy/coarse_synth', acc_coarse_0, i)
                 self.writer.add_scalar('Accuracy/coarse_mdepth', acc_coarse, i)
@@ -290,21 +228,22 @@ class Trainer():
 
 
 
-if __name__ == '__main__':
 
+if __name__ == '__main__':
+    
     trainer = Trainer(
-        megadepth_root_path=args.megadepth_root_path, 
-        synthetic_root_path=args.synthetic_root_path, 
-        ckpt_save_path=args.ckpt_save_path,
-        model_name=args.training_type,
-        batch_size=args.batch_size,
-        n_steps=args.n_steps,
-        lr=args.lr,
-        gamma_steplr=args.gamma_steplr,
-        training_res=args.training_res,
-        device_num=args.device_num,
-        dry_run=args.dry_run,
-        save_ckpt_every=args.save_ckpt_every
+        megadepth_root_path="/home/wenhuanyao/Dataset/MegaDepth", 
+        cityscapes_root_path="/home/wenhuanyao/Dataset/cityscapes",
+        ckpt_save_path="/home/wenhuanyao/accelerated_features/checkpoints/cityscape",
+        model_name="xfeat_citiscapes",
+        batch_size=16,
+        n_steps=160_000,
+        lr=3e-4,
+        gamma_steplr=0.5,
+        training_res=(800, 608),
+        device_num="2",
+        dry_run=False,
+        save_ckpt_every=2000
     )
 
     trainer.train()

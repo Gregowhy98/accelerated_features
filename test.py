@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import torch.nn.functional as F
 import scipy.io as sio
+import tqdm
 
 import torch.nn as nn
 import torch.optim as optim
@@ -60,21 +61,6 @@ def preprocess_image(image_path, keypoints, patch_size=9):
     return torch.stack(patches), valid_keypoints
 
         
-def train_model(model, dataloader, criterion, optimizer, num_epochs=25):
-    for epoch in range(num_epochs):
-        model.train()
-        running_loss = 0.0
-        for inputs, labels in dataloader:
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item() * inputs.size(0)
-        epoch_loss = running_loss / len(dataloader.dataset)
-        print(f'Epoch {epoch}/{num_epochs - 1}, Loss: {epoch_loss:.4f}')
-
-
 class WireframeDataset(Dataset):
     def __init__(self, dataset_folder, use='train', transform=None):
         # init
@@ -105,6 +91,7 @@ class WireframeDataset(Dataset):
         self.item_list = sorted([item.strip() for item in item_list])
         self.N = len(item_list)
         print('Number of images in {} set: {}'.format(self.use, self.N))
+        pass
         
     def __len__(self):
         return self.N
@@ -112,7 +99,7 @@ class WireframeDataset(Dataset):
     def __getitem__(self, idx):
         # load img
         img_id = self.item_list[idx]
-        img_path = os.path.join(self.img_folder, img_id)
+        img_path = os.path.join(self.v11_folder, 'all', img_id)
         img = cv2.imread(img_path, cv2.IMREAD_COLOR)
         img_tensor = self.transform(img)
         # load xfeat kpts
@@ -125,18 +112,36 @@ class WireframeDataset(Dataset):
 
 
 
-if __name__ == "__main__":
-    # kpts_path = '/home/wenhuanyao/Dataset/Wireframe/xfeat_kpts/00030043_kpts.npy'
-    # keypoints = np.load(kpts_path)
-    # image_path = '/home/wenhuanyao/Dataset/Wireframe/v1.1/all/00030043.jpg'
-    # patches, valid_keypoints = preprocess_image(image_path, keypoints)
-    
+def train_model():
     dataset_folder = '/home/wenhuanyao/Dataset/Wireframe'
     model = Transformer()
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
+    num_epochs = 25
     mydataset = WireframeDataset(dataset_folder, use='train', transform=None)
-    mydataset = WireframeDataset(dataset_folder, use='test', transform=None)
+    
     mydataloader = DataLoader(mydataset, batch_size=1, shuffle=False)
-    train_model(model, mydataloader, criterion, optimizer)
+    for epoch in range(num_epochs):
+        model.train()
+        running_loss = 0.0
+        for i, data in tqdm.tqdm(enumerate(mydataloader), desc='processing'):
+        # for i, labels in mydataloader:
+            img, keypoints, lines_label = data[0], data[1], data[2]
+            patches, valid_keypoints = preprocess_image(img, keypoints, patch_size=9)
+            # inputs = inputs.to(device)
+            # labels = labels.to(device)
+
+            optimizer.zero_grad()
+            # outputs = model(inputs)
+            # loss = criterion(outputs, labels)
+            # loss.backward()
+            # optimizer.step()
+            # running_loss += loss.item() * inputs.size(0)
+        epoch_loss = running_loss / len(mydataloader.dataset)
+        print(f'Epoch {epoch}/{num_epochs - 1}, Loss: {epoch_loss:.4f}')
+
+
+if __name__ == "__main__":
+    
+    train_model()
     
