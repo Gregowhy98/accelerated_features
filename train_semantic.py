@@ -16,77 +16,45 @@ from modules.training.utils import *
 from modules.training.losses import *
 
 from modules.dataset.megadepth.megadepth import MegaDepthDataset
+from cityscapesdataset import CityScapesDataset
 from modules.dataset.megadepth import megadepth_warper
 from torch.utils.data import Dataset, DataLoader
-
-class CityscapesDataset(Dataset):
-    def __init__(self,
-                 root_dir,**kwargs):
-        pass
-    
-    def __len__(self):
-        pass
-    
-    def __getitem__(self, idx):
-        pass
 
 
 
 class Trainer():
 
-    def __init__(self, megadepth_root_path, 
-                        cityscapes_root_path,
+    def __init__(self, cityscapes_root_path,
                        ckpt_save_path, 
                        model_name = 'xfeat_megadepth',
-                       batch_size = 10, n_steps = 160_000, lr= 3e-4, gamma_steplr=0.5, 
+                       batch_size = 10, n_steps = 160_000, lr= 1e-4, gamma_steplr=0.5, 
                        training_res = (800, 608), device_num="0", dry_run = False,
-                       save_ckpt_every = 500):
+                       save_ckpt_every = 500, pretrain_model_path=None, weight_var=0.5):
 
-        self.dev = torch.device ('cuda' if torch.cuda.is_available() else 'cpu')
+        self.dev = torch.device ('cuda:'+ device_num if torch.cuda.is_available() else 'cpu')
         self.net = XFeatModel().to(self.dev)
+        
+        # Load pretrain model
+        if pretrain_model_path is not None:
+            self.net.load_state_dict(torch.load(pretrain_model_path, map_location=self.dev))
+            print(f"Pretrain model loaded from {pretrain_model_path}")
 
-        #Setup optimizer 
+        # Setup optimizer 
         self.batch_size = batch_size
         self.steps = n_steps
-        self.opt = optim.Adam(filter(lambda x: x.requires_grad, self.net.parameters()) , lr = lr)
+        self.opt = optim.Adam(filter(lambda x: x.requires_grad, self.net.parameters()), lr=lr, weight_decay=1e-5)  # 增加 weight_decay
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.opt, step_size=30_000, gamma=gamma_steplr)
-
-        ##################### MEGADEPTH INIT ##########################
-        if model_name in ('xfeat_default', 'xfeat_megadepth'):
-            TRAIN_BASE_PATH = f"{megadepth_root_path}/train_data/megadepth_indices"
-            TRAINVAL_DATA_SOURCE = f"{megadepth_root_path}/MegaDepth_v1"
-
-            TRAIN_NPZ_ROOT = f"{TRAIN_BASE_PATH}/scene_info_0.1_0.7"
-
-            npz_paths = glob.glob(TRAIN_NPZ_ROOT + '/*.npz')[:]
-            data = torch.utils.data.ConcatDataset( [MegaDepthDataset(root_dir = TRAINVAL_DATA_SOURCE,
-                            npz_path = path) for path in tqdm.tqdm(npz_paths, desc="[MegaDepth] Loading metadata")] )
-
-            self.data_loader = DataLoader(data, 
-                                          batch_size=int(self.batch_size * 0.6 if model_name=='xfeat_default' else batch_size),
-                                          shuffle=True)
-            self.data_iter = iter(self.data_loader)
-
-        else:
-            self.data_iter = None
-        ##################### MEGADEPTH INIT END #######################
         
         ##################### CITYSCAPES INIT ##########################
         if model_name in ('xfeat_cityscapes'):
-            
-            TRAIN_BASE_PATH = f"{cityscapes_root_path}/train"
-
-            TRAIN_NPZ_ROOT = f"{TRAIN_BASE_PATH}/scene_info_0.1_0.7"
-
-            # npz_paths = glob.glob(TRAIN_NPZ_ROOT + '/*.npz')[:]
-            data = torch.utils.data.ConcatDataset( [CityscapesDataset(root_dir = TRAINVAL_DATA_SOURCE,
-                            npz_path = path) for path in tqdm.tqdm(npz_paths, desc="[Cityscapes] Loading metadata")] )
-
-            self.data_loader = DataLoader(data, 
-                                          batch_size=int(self.batch_size * 0.6 if model_name=='xfeat_default' else batch_size),
-                                          shuffle=True)
+            tf = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.Resize(training_res),
+                transforms.ToTensor()
+            ])
+            mydataset = CityScapesDataset(cityscapes_root_path, use='train', transform=tf, device=self.dev)
+            self.data_loader = DataLoader(mydataset, batch_size=int(batch_size), shuffle=True)     
             self.data_iter = iter(self.data_loader)
-        
         else:
             self.data_iter = None
         ##################### CITYSCAPES INIT END #######################
@@ -99,15 +67,13 @@ class Trainer():
         self.ckpt_save_path = ckpt_save_path
         self.writer = SummaryWriter(ckpt_save_path + f'/logdir/{model_name}_' + time.strftime("%Y_%m_%d-%H_%M_%S"))
         self.model_name = model_name
+        self.weight_var = weight_var
 
 
     def train(self):
 
         self.net.train()  # 将模型设置为训练模式
-
-        difficulty = 0.10  # 设置训练难度
-
-        p1s, p2s, H1, H2 = None, None, None, None  # 初始化变量
+        
         d = None  # 初始化数据变量
         
         if self.data_iter is not None:
@@ -118,7 +84,7 @@ class Trainer():
                 if not self.dry_run:  # 如果不是 dry run
                     if self.data_iter is not None:
                         try:
-                            # 获取下一个 MegaDepth 数据批次
+                            # 获取下一个数据批次
                             d = next(self.data_iter)
                         except StopIteration:
                             print("End of DATASET!")
@@ -130,74 +96,42 @@ class Trainer():
                     for k in d.keys():
                         if isinstance(d[k], torch.Tensor):
                             d[k] = d[k].to(self.dev)  # 将数据移动到设备上（GPU 或 CPU）
+                            
+                    raw_img = d['raw_img']
+                    seg_gt = d['seg_gt']
+                    
+                    xfeat_gt = d['xfeat_gt']
+                    hmap_gt = xfeat_gt[2].squeeze(1)
                 
-                    p1, p2 = d['image0'], d['image1']  # 获取图像对
-                    positives_md_coarse = megadepth_warper.spvs_coarse(d, 8)  # 获取粗匹配点
-
-                # 将 MegaDepth 数据转换为灰度图像
+                # 数据转换为灰度图像
                 with torch.inference_mode():
                     if d is not None:
-                        p1 = p1.mean(1, keepdim=True)
-                        p2 = p2.mean(1, keepdim=True)
+                        raw_img = raw_img.mean(1, keepdim=True)
 
-                    positives_c = positives_md_coarse
+                # 调整 seg_gt 的形状，使其与 hmap_gt 一致
+                seg_gt = F.interpolate(seg_gt, size=hmap_gt.shape[2:], mode='bilinear', align_corners=False)
 
-                # 检查批次是否损坏（匹配点太少）
-                is_corrupted = False
-                for p in positives_c:
-                    if len(p) < 30:
-                        is_corrupted = True
+                # 调整 seg_gt 的方差
+                seg_gt = seg_gt * self.weight_var
 
-                if is_corrupted:
-                    continue
+                # 将 seg_gt 的值作为权重，通过逐元素相乘赋给 hmap_gt
+                weighted_hmap_gt = hmap_gt * seg_gt
 
                 # 前向传播
-                feats1, kpts1, hmap1 = self.net(p1)
-                feats2, kpts2, hmap2 = self.net(p2)
+                _, _, hmap = self.net(raw_img)  # feat, kpts, hmap
 
                 loss_items = []
+                
+                # 计算 hmap 的损失
+                loss_hmap = 0
+                for b in range(hmap.size(0)):  # 遍历批次中的每个样本
+                    loss_hmap += F.mse_loss(hmap[b], weighted_hmap_gt[b])
+                loss_hmap /= hmap.size(0)  # 计算平均损失
 
-                for b in range(len(positives_c)):
-                    # 获取正匹配点
-                    pts1, pts2 = positives_c[b][:, :2], positives_c[b][:, 2:]
-
-                    # 获取对应索引的特征
-                    m1 = feats1[b, :, pts1[:,1].long(), pts1[:,0].long()].permute(1,0)
-                    m2 = feats2[b, :, pts2[:,1].long(), pts2[:,0].long()].permute(1,0)
-
-                    # 获取对应索引的热图
-                    h1 = hmap1[b, 0, pts1[:,1].long(), pts1[:,0].long()]
-                    h2 = hmap2[b, 0, pts2[:,1].long()]
-                    coords1 = self.net.fine_matcher(torch.cat([m1, m2], dim=-1))
-
-                    # 计算损失
-                    loss_ds, conf = dual_softmax_loss(m1, m2)
-                    loss_coords, acc_coords = coordinate_classification_loss(coords1, pts1, pts2, conf)
-
-                    loss_kp_pos1, acc_pos1 = alike_distill_loss(kpts1[b], p1[b])
-                    loss_kp_pos2, acc_pos2 = alike_distill_loss(kpts2[b], p2[b])
-                    loss_kp_pos = (loss_kp_pos1 + loss_kp_pos2)*2.0
-                    acc_pos = (acc_pos1 + acc_pos2)/2
-
-                    loss_kp =  keypoint_loss(h1, conf) + keypoint_loss(h2, conf)
-
-                    loss_items.append(loss_ds.unsqueeze(0))
-                    loss_items.append(loss_coords.unsqueeze(0))
-                    loss_items.append(loss_kp.unsqueeze(0))
-                    loss_items.append(loss_kp_pos.unsqueeze(0))
-
-                    if b == 0:
-                        acc_coarse_0 = check_accuracy(m1, m2)
-
-                acc_coarse = check_accuracy(m1, m2)
-
-                nb_coarse = len(m1)
+                loss_items.append(loss_hmap.unsqueeze(0))
+                
                 loss = torch.cat(loss_items, -1).mean()
-                loss_coarse = loss_ds.item()
-                loss_coord = loss_coords.item()
-                loss_coord = loss_coords.item()
-                loss_kp_pos = loss_kp_pos.item()
-                loss_l1 = loss_kp.item()
+                loss_hmap = loss_hmap.item()
 
                 # 反向传播
                 loss.backward()
@@ -209,41 +143,32 @@ class Trainer():
                 if (i+1) % self.save_ckpt_every == 0:
                     print('saving iter ', i+1)
                     torch.save(self.net.state_dict(), self.ckpt_save_path + f'/{self.model_name}_{i+1}.pth')
-
-                pbar.set_description( 'Loss: {:.4f} acc_c0 {:.3f} acc_c1 {:.3f} acc_f: {:.3f} loss_c: {:.3f} loss_f: {:.3f} loss_kp: {:.3f} #matches_c: {:d} loss_kp_pos: {:.3f} acc_kp_pos: {:.3f}'.format(
-                                                                        loss.item(), acc_coarse_0, acc_coarse, acc_coords, loss_coarse, loss_coord, loss_l1, nb_coarse, loss_kp_pos, acc_pos) )
+                
+                pbar.set_description(f'Loss: {loss.item():.4f} loss_hmap: {loss_hmap:.4f}')
                 pbar.update(1)
 
                 # 记录指标
                 self.writer.add_scalar('Loss/total', loss.item(), i)
-                self.writer.add_scalar('Accuracy/coarse_synth', acc_coarse_0, i)
-                self.writer.add_scalar('Accuracy/coarse_mdepth', acc_coarse, i)
-                self.writer.add_scalar('Accuracy/fine_mdepth', acc_coords, i)
-                self.writer.add_scalar('Accuracy/kp_position', acc_pos, i)
-                self.writer.add_scalar('Loss/coarse', loss_coarse, i)
-                self.writer.add_scalar('Loss/fine', loss_coord, i)
-                self.writer.add_scalar('Loss/reliability', loss_l1, i)
-                self.writer.add_scalar('Loss/keypoint_pos', loss_kp_pos, i)
-                self.writer.add_scalar('Count/matches_coarse', nb_coarse, i)
-
-
+                self.writer.add_scalar('Loss/hmap', loss_hmap, i)
+                self.writer.flush()
 
 
 if __name__ == '__main__':
     
     trainer = Trainer(
-        megadepth_root_path="/home/wenhuanyao/Dataset/MegaDepth", 
         cityscapes_root_path="/home/wenhuanyao/Dataset/cityscapes",
         ckpt_save_path="/home/wenhuanyao/accelerated_features/checkpoints/cityscape",
-        model_name="xfeat_citiscapes",
-        batch_size=16,
+        model_name="xfeat_cityscapes",
+        pretrain_model_path="/home/wenhuanyao/accelerated_features/weights/xfeat_semantic.pt",
+        batch_size=32,
         n_steps=160_000,
-        lr=3e-4,
+        lr=1e-4,  # 调整学习率
         gamma_steplr=0.5,
         training_res=(800, 608),
         device_num="2",
         dry_run=False,
-        save_ckpt_every=2000
+        save_ckpt_every=1000,
+        weight_var=1.5  # 设置权重方差参数
     )
 
     trainer.train()

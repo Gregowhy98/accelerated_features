@@ -23,7 +23,7 @@ class CityScapesDataset(Dataset):
         else:
             self.transform = transforms.Compose([
                 transforms.ToPILImage(),
-                transforms.Resize((480, 640)),
+                transforms.Resize((800, 608)),
                 transforms.ToTensor()
                 ])
         self.device = device
@@ -31,7 +31,7 @@ class CityScapesDataset(Dataset):
         # folder path
         self.raw_img_folder = os.path.join(self.dataset_folder, 'raw_img')
         self.weighted_seg_folder = os.path.join(self.dataset_folder, 'weighted_seg')
-        self.xfeat_folder = os.path.join(self.dataset_folder, 'xfeat')
+        self.xfeat_folder = os.path.join(self.dataset_folder, 'xfeat_raw')
         
         # item list
         self.raw_img_files = list_files(self.raw_img_folder)
@@ -53,8 +53,10 @@ class CityScapesDataset(Dataset):
         xfeat_gt_path = os.path.join(self.xfeat_folder, img_name).replace('.png', '_xfeat.pkl')
         with open(xfeat_gt_path, 'rb') as f:
             xfeat_gt = pickle.load(f)
-        for key in xfeat_gt.keys():
-            xfeat_gt[key] = torch.tensor(xfeat_gt[key]).to(self.device)
+
+        xfeat_gt = [item.to(self.device) for item in xfeat_gt]
+        # for key in xfeat_gt.keys():
+        #     xfeat_gt[key] = torch.tensor(xfeat_gt[key]).to(self.device)
             
         data = {
             'raw_img': raw_img,
