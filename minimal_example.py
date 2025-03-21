@@ -19,14 +19,25 @@ from utils import draw_keypoints_on_image, draw_scores_heatmap, visualize_descri
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '' #Force CPU, comment for GPU
 
-weights = '/home/wenhuanyao/accelerated_features/checkpoints/xfeat_synthetic_9000.pth'
+# synthetic
+# weights = '/home/wenhuanyao/accelerated_features/checkpoints/synthetic/xfeat_synthetic_50000.pth'
+# weights = '/home/wenhuanyao/accelerated_features/checkpoints/synthetic/xfeat_synthetic_100000.pth'
+# weights = '/home/wenhuanyao/accelerated_features/checkpoints/synthetic/xfeat_synthetic_150000.pth'
+
+# cityscape semantic
+weights = '/home/wenhuanyao/accelerated_features/checkpoints/cityscape/xfeat_cityscapes_4000.pth'
+# weights = '/home/wenhuanyao/accelerated_features/checkpoints/cityscape/xfeat_cityscapes_8000.pth'
+# weights = '/home/wenhuanyao/accelerated_features/checkpoints/cityscape/xfeat_cityscapes_12000.pth'
+
+# megadepth
+# weights = '/home/wenhuanyao/accelerated_features/checkpoints/megadepth/xfeat_megadepth_20000.pth'
+# weights = '/home/wenhuanyao/accelerated_features/checkpoints/megadepth/xfeat_megadepth_40000.pth'
+# weights = '/home/wenhuanyao/accelerated_features/checkpoints/megadepth/xfeat_megadepth_60000.pth'
+
 save_folder = '/home/wenhuanyao/accelerated_features/output'
 xfeat = XFeat(weights=weights)  #, top_k=4096, detection_threshold=0.05)
 
-#Random input
-# x = torch.randn(1,3,480,640)
-
-test_img_path = '/home/wenhuanyao/accelerated_features/assets/demo_pic_3.png'
+test_img_path = '/home/wenhuanyao/accelerated_features/assets/berlin_000003_000019_leftImg8bit.png'
 test_img = cv2.imread(test_img_path)
 x = torch.from_numpy(test_img).permute(2,0,1).unsqueeze(0).float()
 output = xfeat.detectAndCompute(x, top_k = 2000)[0]

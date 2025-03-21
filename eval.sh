@@ -1,0 +1,1 @@
+python3 -m modules.eval.megadepth1500 --dataset-dir '/home/wenhuanyao/Dataset/MegaDepth/megadepth_test_1500/' --matcher xfeat --ransac-thr 2.5

@@ -152,3 +152,14 @@ class XFeatModel(nn.Module):
 		keypoints = self.keypoint_head(self._unfold2d(x, ws=8)) #Keypoint map logits
 
 		return feats, keypoints, heatmap
+
+
+# if __name__ == '__main__':
+#     import torch.onnx
+#     import netron
+    
+#     output_path = '/home/wenhuanyao/accelerated_features/output/xfeat.onnx'
+#     net = XFeatModel()
+    
+#     torch.onnx.export(net, torch.randn(1, 3, 800, 608), output_path, verbose=True)
+#     netron.start(output_path)
